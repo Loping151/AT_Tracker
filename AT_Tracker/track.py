@@ -239,20 +239,12 @@ async def parse_and_enrich_message(bot: Bot, group_id: int, event: Event) -> Lis
     if event.at_list:
         for at_qq in event.at_list:
             qq = str(at_qq)
-            card = f"@{qq}"
-            if qq != "all":
-                try:
-                    # 尝试从缓存的信息中获取群名片
-                    # gsuid_core中可能没有直接的API，这里先用QQ号作为显示
-                    card = f"@{qq}"
-                except Exception as e:
-                    logger.warning(f"获取群成员 {qq} 信息失败: {e}")
-            else:
-                card = "全体成员"
+            # 只记录QQ号，不带@前缀。
+            # 具体的昵称显示交给生成图片时的上下文处理。
+            card = "全体成员" if qq == "all" else qq
             content_list.append({"type": "at", "qq": qq, "card": card})
 
     return content_list
-
 
 async def process_images_in_message(msg_record: Dict, group_id: int, associated_images: List[str]):
     """检查消息中是否有图片，下载它们并更新关联图片列表"""
@@ -427,6 +419,13 @@ async def handle_who_at_me(bot: Bot, event: Event):
     user_id = get_query_user_id(event)  # 支持AT他人
     retention_days = get_config("RETENTION_DAYS")
 
+    # --- 获取用户的显示名称 ---
+    # 如果是本人查询，直接从当前事件中获取命令发送者的群名片或昵称
+    target_name = user_id
+    if str(user_id) == str(event.user_id) and event.sender:
+        # 优先使用群名片，其次昵称，最后保底使用QQ号
+        target_name = event.sender.get("card") or event.sender.get("nickname") or user_id
+
     group_at_records = at_records.get(group_id, [])
 
     valid_records = []
@@ -483,8 +482,12 @@ async def handle_who_at_me(bot: Bot, event: Event):
 
     try:
         images = []
+        # 构建替换字典：{QQ号: 昵称}
+        name_map = {user_id: target_name} if target_name != user_id else {}
+
         for record in recent_records:
-            img = await generate_chat_image(bot, record)
+            # 传入 name_map
+            img = await generate_chat_image(bot, record, name_map=name_map)
             if img:
                 # 转换图片为可发送格式
                 converted_img = await convert_img(img)
@@ -507,7 +510,6 @@ async def handle_who_at_me(bot: Bot, event: Event):
         logger.error("生成AT记录图片失败:\n" + traceback.format_exc())
         logger.error(f"处理查询命令失败: {e}")
 
-
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
     lines = []
     for paragraph in text.split("\n"):
@@ -525,7 +527,7 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
     return "\n".join(lines)
 
 
-async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
+async def generate_chat_image(bot: Bot, record: Dict, name_map: Dict[str, str] = None) -> Optional[Image.Image]:
     try:
         width, padding = 700, 20
         avatar_size, msg_padding = 45, 15
@@ -617,7 +619,16 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
                         inner_content_y += placeholder_h + item_spacing
 
                 elif item["type"] == "at":
-                    at_text = f"@{item.get('card', item.get('qq', ''))}"
+                    qq_id = str(item.get('qq', ''))
+
+                    # 优先使用 name_map 中的昵称，否则使用记录中的 card，最后保底用 qq_id
+                    card_text = item.get('card', qq_id)
+                    if name_map and qq_id in name_map:
+                        card_text = name_map[qq_id]
+
+                    # 统一添加 @ 前缀
+                    at_text = f"@{card_text}"
+
                     bbox = draw.textbbox((0, 0), at_text, font=cjk_font)
                     text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
@@ -653,7 +664,6 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
     except Exception as e:
         logger.error(f"生成聊天记录图片失败: {e}")
         return None
-
 
 # 初始化
 asyncio.create_task(init())
