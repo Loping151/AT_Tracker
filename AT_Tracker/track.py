@@ -487,7 +487,7 @@ async def handle_who_at_me(bot: Bot, event: Event):
             img = await generate_chat_image(bot, record)
             if img:
                 # 转换图片为可发送格式
-                converted_img = await convert_img(img)
+                converted_img = await convert_img(img, is_base64=True)
                 images.append(converted_img)
 
         if not images:
