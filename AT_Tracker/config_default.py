@@ -28,6 +28,6 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
     "EnableAvatarCache": GsBoolConfig(
         "启用头像缓存",
         "是否缓存用户QQ头像，启用可加快图片生成速度但会占用更多磁盘空间",
-        True,
+        False,
     ),
 }

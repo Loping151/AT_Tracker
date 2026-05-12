@@ -54,10 +54,8 @@ git clone https://github.com/Loping151/core_plugin_at_tracker AT_Tracker
 | `RETENTION_DAYS` | AT 记录保留天数，超期删除 | 3 |
 | `CACHE_SIZE` | 群组最近消息缓存条数 | 5 |
 | `TRACKING_COUNT` | 检测到 AT 后继续追踪发送者后续消息条数 | 10 |
-| `EnableAvatarCache` | 缓存用户头像（加速渲染，吃磁盘） | True |
+| `EnableAvatarCache` | 缓存用户头像（加速渲染，吃磁盘） | False |
 
 ## 致谢
 
 源自作者本地的 NoneBot 插件，5 分钟改成的 gsuid 版本。移植欢迎，保留出处即可。
-
-老插件，非严重 bug 不再维护。
