@@ -41,7 +41,7 @@ class HTTPError(Exception):
 @driver.on_startup
 async def init():
     """初始化插件"""
-    logger.debug("AT追踪插件已启动")
+    logger.debug("[谁AT我·追踪] AT追踪插件已启动")
     data_dir.mkdir(parents=True, exist_ok=True)
     avatar_path.mkdir(parents=True, exist_ok=True)
     load_at_records()
@@ -50,13 +50,13 @@ async def init():
 @scheduler.scheduled_job("cron", day="*", hour=4, minute=0, misfire_grace_time=60)
 async def scheduled_cleanup():
     """每日定时执行清理任务"""
-    logger.debug("开始执行每日AT记录清理任务...")
+    logger.debug("[谁AT我·追踪] 开始执行每日AT记录清理任务...")
     await cleanup_old_records()
-    logger.debug("每日AT记录清理任务执行完毕。")
+    logger.debug("[谁AT我·追踪] 每日AT记录清理任务执行完毕。")
 
 async def cleanup_old_records():
     """删除超过指定天数的旧AT记录和相关文件"""
-    logger.debug("开始清理旧的AT记录...")
+    logger.debug("[谁AT我·追踪] 开始清理旧的AT记录...")
     cutoff_date = datetime.now() - timedelta(days=RETENTION_DAYS)
     
     for group_id, records in list(at_records.items()):
@@ -74,22 +74,22 @@ async def cleanup_old_records():
                         if image_path.exists():
                             try:
                                 os.remove(image_path)
-                                logger.debug(f"已删除过期记录关联的图片: {image_path}")
+                                logger.debug(f"[谁AT我·追踪] 已删除过期记录关联的图片: {image_path}")
                             except OSError as e:
-                                logger.error(f"删除图片 {image_path} 失败: {e}")
+                                logger.error(f"[谁AT我·追踪] 删除图片 {image_path} 失败: {e}")
                     
                     # 删除记录文件本身
                     file_path = group_data_dir / f"at_record_{record_id}.json"
                     if file_path.exists():
                         try:
                             os.remove(file_path)
-                            logger.debug(f"已删除过期记录文件: {file_path}")
+                            logger.debug(f"[谁AT我·追踪] 已删除过期记录文件: {file_path}")
                         except OSError as e:
-                            logger.error(f"删除记录文件 {file_path} 失败: {e}")
+                            logger.error(f"[谁AT我·追踪] 删除记录文件 {file_path} 失败: {e}")
                 else:
                     records_to_keep.append(record)
             except (ValueError, KeyError) as e:
-                logger.warning(f"处理记录时出错，将保留该记录: {record.get('id', 'N/A')}, 错误: {e}")
+                logger.warning(f"[谁AT我·追踪] 处理记录时出错，将保留该记录: {record.get('id', 'N/A')}, 错误: {e}")
                 records_to_keep.append(record)
         
         at_records[group_id] = records_to_keep
@@ -98,15 +98,15 @@ async def cleanup_old_records():
         if group_dir.is_dir() and not any(group_dir.iterdir()) and group_dir.name.isdigit():
             try:
                 shutil.rmtree(group_dir)
-                logger.debug(f"已删除空的群组数据文件夹: {group_dir}")
+                logger.debug(f"[谁AT我·追踪] 已删除空的群组数据文件夹: {group_dir}")
             except OSError as e:
-                logger.error(f"删除空文件夹 {group_dir} 失败: {e}")
+                logger.error(f"[谁AT我·追踪] 删除空文件夹 {group_dir} 失败: {e}")
     try:
         shutil.rmtree(avatar_path)
         avatar_path.mkdir(parents=True, exist_ok=True)
-        logger.info("已清理头像缓存。")
+        logger.info("[谁AT我·追踪] 已清理头像缓存。")
     except OSError as e:
-        logger.error(f"清理头像缓存失败: {e}")
+        logger.error(f"[谁AT我·追踪] 清理头像缓存失败: {e}")
         
 # --- 数据读写 ---
 def load_at_records():
@@ -124,9 +124,9 @@ def load_at_records():
                             data = json.load(f)
                             at_records[group_id].append(data)
                 except (ValueError, json.JSONDecodeError) as e:
-                    logger.error(f"加载群组 {group_dir.name} 的记录失败: {e}")
+                    logger.error(f"[谁AT我·追踪] 加载群组 {group_dir.name} 的记录失败: {e}")
     except Exception as e:
-        logger.error(f"加载所有AT记录失败: {e}")
+        logger.error(f"[谁AT我·追踪] 加载所有AT记录失败: {e}")
 
 def save_at_record(record: Dict):
     """保存AT记录到本地"""
@@ -141,7 +141,7 @@ def save_at_record(record: Dict):
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"保存AT记录失败: {e}")
+        logger.error(f"[谁AT我·追踪] 保存AT记录失败: {e}")
 
 # --- 网络与工具函数 ---
 def download(url: str) -> bytes:
@@ -168,7 +168,7 @@ async def download_image(url: str, save_path: Path) -> bool:
             f.write(content)
         return True
     except Exception as e:
-        logger.error(f"下载图片失败 {url}: {e}")
+        logger.error(f"[谁AT我·追踪] 下载图片失败 {url}: {e}")
     return False
 
 async def get_user_avatar(qq: str) -> Optional[Image.Image]:
@@ -185,7 +185,7 @@ async def get_user_avatar(qq: str) -> Optional[Image.Image]:
         
         return Image.open(BytesIO(avatar_bytes))
     except Exception as e:
-        logger.error(f"获取QQ头像失败 {qq}: {e}")
+        logger.error(f"[谁AT我·追踪] 获取QQ头像失败 {qq}: {e}")
         return None
 
 async def parse_and_enrich_message(bot: Bot, group_id: int, message: Message) -> List[Dict]:
@@ -216,7 +216,7 @@ async def parse_and_enrich_message(bot: Bot, group_id: int, message: Message) ->
                     info = await bot.get_group_member_info(group_id=group_id, user_id=int(qq))
                     card = info.get('card') or info.get('nickname', str(qq))
                 except Exception as e:
-                    logger.warning(f"获取群成员 {qq} 信息失败: {e}")
+                    logger.warning(f"[谁AT我·追踪] 获取群成员 {qq} 信息失败: {e}")
             else:
                 card = "全体成员"
             content_list.append({'type': 'at', 'qq': qq, 'card': card})
@@ -284,15 +284,15 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
                 await process_images_in_message(msg_record, group_id, record_to_update['associated_images'])
                 record_to_update['messages'].append(msg_record)
                 save_at_record(record_to_update)
-                logger.debug(f"Appended message to record {session['record_id']} and saved.")
+                logger.debug(f"[谁AT我·追踪] Appended message to record {session['record_id']} and saved.")
                 
                 session['remaining'] -= 1
                 if session['remaining'] > 0:
                     sessions_to_keep.append(session)
                 else:
-                    logger.info(f"AT tracking session for record {session['record_id']} has finished.")
+                    logger.info(f"[谁AT我·追踪] AT tracking session for record {session['record_id']} has finished.")
             else:
-                 logger.warning(f"Could not find record for active tracking session {session['record_id']}. Removing session.")
+                 logger.warning(f"[谁AT我·追踪] Could not find record for active tracking session {session['record_id']}. Removing session.")
 
     if sessions_to_keep:
         active_at_tracking[group_id] = sessions_to_keep
@@ -349,7 +349,7 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
                 at_records[group_id] = []
             at_records[group_id].append(at_record)
             save_at_record(at_record)
-            logger.info(f"New AT detected. Immediately created and saved record {record_id}.")
+            logger.info(f"[谁AT我·追踪] New AT detected. Immediately created and saved record {record_id}.")
             
             # 创建新的追踪会话
             new_session = {
@@ -362,7 +362,7 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
             if group_id not in active_at_tracking:
                 active_at_tracking[group_id] = []
             active_at_tracking[group_id].append(new_session)
-            logger.info(f"Started new AT tracking session for record {record_id}. Tracking next {TRACKING_COUNT} messages.")
+            logger.info(f"[谁AT我·追踪] Started new AT tracking session for record {record_id}. Tracking next {TRACKING_COUNT} messages.")
 
 # --- 命令处理器 ---
 who_at_me = on_command("谁at我", aliases={"谁艾特我", "谁@我", "xw谁艾特我", "xw谁@我", "xw谁at我", "小维谁艾特我", "小维谁@我", "小维谁at我"}, priority=5, block=True)
@@ -385,7 +385,7 @@ async def handle_who_at_me(bot: Bot, event: GroupMessageEvent):
             if record_time >= cutoff_date:
                 valid_records.append(record)
         except (ValueError, KeyError):
-            logger.warning(f"记录 {record.get('id', 'N/A')} 的日期格式不正确，已跳过。")
+            logger.warning(f"[谁AT我·追踪] 记录 {record.get('id', 'N/A')} 的日期格式不正确，已跳过。")
             continue
     
     user_at_records = [
@@ -458,7 +458,7 @@ async def handle_who_at_me(bot: Bot, event: GroupMessageEvent):
     except FinishedException:
         pass
     except Exception as e:
-        logger.error(f"处理who_at_me命令失败: {e}")
+        logger.error(f"[谁AT我·追踪] 处理who_at_me命令失败: {e}")
 
 async def send_as_forward_msg(bot: Bot, event: GroupMessageEvent, messages: List[Message]):
     """将消息列表作为转发消息发送"""
@@ -472,7 +472,7 @@ async def send_as_forward_msg(bot: Bot, event: GroupMessageEvent, messages: List
     try:
         await bot.send_group_forward_msg(group_id=event.group_id, messages=nodes)
     except Exception as e:
-        logger.error(f"发送转发消息失败: {e}")
+        logger.error(f"[谁AT我·追踪] 发送转发消息失败: {e}")
 
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
     lines = []
@@ -502,7 +502,7 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
             time_cjk_font = ImageFont.truetype(str(font_path), 12)
             
         except Exception as e:
-            logger.warning(f"加载字体失败，将使用默认字体: {e}")
+            logger.warning(f"[谁AT我·追踪] 加载字体失败，将使用默认字体: {e}")
             cjk_font = small_cjk_font = time_cjk_font = ImageFont.load_default()
         
         img = Image.new('RGB', (width, 20000), color='#f5f5f5')
@@ -609,7 +609,7 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
         pass
     
     except Exception as e:
-        logger.error(f"生成聊天记录图片失败: {e}")
+        logger.error(f"[谁AT我·追踪] 生成聊天记录图片失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return None
