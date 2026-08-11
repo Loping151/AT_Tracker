@@ -28,6 +28,10 @@ CACHE_SIZE = 5
 TRACKING_COUNT = 10
 MAX_DISK_MB = 1024  # 记录缓存最大磁盘占用(MB)，超过后从最早的记录开始清理
 
+# 聊天图只用于出图，按渲染尺寸存储
+IMAGE_MAX_SIZE = (250, 200)
+AVATAR_RENDER_SIZE = 45
+
 # --- 全局缓存 ---
 message_cache: Dict[int, deque] = {}  # group_id -> deque of messages
 at_records: Dict[int, List[Dict]] = {}  # group_id -> list of at records
@@ -247,13 +251,31 @@ def download(url: str) -> bytes:
         raise HTTPError(f"httpx status code: {status_code}")
     return buffer.getvalue()
 
+def _shrink_image(path: Path):
+    """按渲染尺寸缩放并转webp，覆盖原文件"""
+    with Image.open(path) as im:
+        im.draft("RGB", IMAGE_MAX_SIZE)  # jpeg 可按比例解码，省时省内存
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, "#ffffff")
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        im.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+        im.save(path, "WEBP", quality=75, method=6)
+
 async def download_image(url: str, save_path: Path) -> bool:
-    """下载图片到本地"""
+    """下载图片到本地并压缩为webp"""
     try:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         content = await asyncio.get_event_loop().run_in_executor(None, download, url)
         with open(save_path, 'wb') as f:
             f.write(content)
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _shrink_image, save_path)
+        except Exception as e:
+            logger.warning(f"[谁AT我·追踪] 压缩图片失败，保留原始文件: {e}")
         return True
     except Exception as e:
         logger.error(f"[谁AT我·追踪] 下载图片失败 {url}: {e}")
@@ -265,7 +287,7 @@ async def get_user_avatar(qq: str) -> Optional[Image.Image]:
         if os.path.exists(data_dir / "avatar_cache" / f"{qq}.jpg"):
             return Image.open(data_dir / "avatar_cache" / f"{qq}.jpg")
         
-        avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+        avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100"
         avatar_bytes = await asyncio.get_event_loop().run_in_executor(None, download, avatar_url)
         
         with open(data_dir / "avatar_cache" / f"{qq}.jpg", 'wb') as f:
@@ -317,14 +339,19 @@ async def process_images_in_message(msg_record: Dict, group_id: int, associated_
     """检查消息中是否有图片，下载它们并更新关联图片列表"""
     for item in msg_record.get('content', []):
         if item['type'] == 'image':
-            url = item['url']
-            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-            img_name = f"{timestamp}_{hashlib.md5(url.encode()).hexdigest()}.jpg"
-            img_path = data_dir / str(group_id) / img_name
-            if not img_path.exists():
-                await download_image(url, img_path)
-                _adjust_usage(_file_size(img_path))
-            item['local_path'] = str(img_path)
+            # 同一条消息会被多个会话处理，已落盘的直接复用，避免重复下载存储
+            local_path = item.get('local_path')
+            if local_path and Path(local_path).exists():
+                img_name = Path(local_path).name
+            else:
+                url = item['url']
+                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                img_name = f"{timestamp}_{hashlib.md5(url.encode()).hexdigest()}.webp"
+                img_path = data_dir / str(group_id) / img_name
+                if not img_path.exists():
+                    await download_image(url, img_path)
+                    _adjust_usage(_file_size(img_path))
+                item['local_path'] = str(img_path)
             if img_name not in associated_images:
                 associated_images.append(img_name)
 
@@ -588,7 +615,7 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
 async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
     try:
         width, padding = 700, 20
-        avatar_size, msg_padding = 45, 15
+        avatar_size, msg_padding = AVATAR_RENDER_SIZE, 15
         bubble_padding, max_bubble_width = 12, 450
 
         try:
@@ -658,7 +685,7 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
                     try:
                         if not (local_path and Path(local_path).exists()): raise FileNotFoundError
                         with Image.open(local_path) as img_content:
-                            img_content.thumbnail((250, 200), Image.Resampling.LANCZOS)
+                            img_content.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
                             img.paste(img_content, (content_x, inner_content_y))
                             inner_content_y += img_content.height + item_spacing
                     except Exception:
