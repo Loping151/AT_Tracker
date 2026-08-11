@@ -29,6 +29,8 @@ font_path = Path(__file__).parent / "SourceHanSerifCN-Bold.otf"
 message_cache: Dict[int, deque] = {}  # group_id -> deque of messages
 at_records: Dict[int, List[Dict]] = {}  # group_id -> list of at records
 active_at_tracking: Dict[int, List[Dict]] = {}  # group_id -> list of active tracking sessions
+_disk_usage = {"total": -1}  # records目录占用字节数的运行计数，-1表示尚未统计
+_cleanup_lock = asyncio.Lock()
 
 # --- SV定义 ---
 at_tracker_sv = SV("AT追踪", area="GROUP")
@@ -41,12 +43,97 @@ def get_config(key: str):
     return ATTrackerConfig.get_config(key).data
 
 
+# --- 磁盘占用控制 ---
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _adjust_usage(delta: int):
+    if _disk_usage["total"] >= 0:
+        _disk_usage["total"] += delta
+
+
+def _compute_disk_usage() -> int:
+    total = 0
+    if RECORD_PATH.exists():
+        for root, _, files in os.walk(RECORD_PATH):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    return total
+
+
+async def _refresh_disk_usage():
+    _disk_usage["total"] = await asyncio.get_event_loop().run_in_executor(None, _compute_disk_usage)
+
+
+def _remove_file(path: Path):
+    try:
+        size = path.stat().st_size
+        path.unlink()
+        _adjust_usage(-size)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.error(f"[谁AT我·追踪] 删除文件 {path} 失败: {e}")
+
+
+def _delete_record_files(group_id: int, record: Dict):
+    group_data_dir = RECORD_PATH / str(group_id)
+    for image_filename in record.get("associated_images", []):
+        _remove_file(group_data_dir / image_filename)
+    _remove_file(group_data_dir / f"at_record_{record['id']}.json")
+
+
+async def enforce_disk_limit():
+    """磁盘占用超限时从最早的记录开始清理，直到降至上限的90%"""
+    max_mb = get_config("MAX_DISK_MB")
+    if not max_mb or _cleanup_lock.locked():
+        return
+    limit = max_mb * 1024 * 1024
+    if 0 <= _disk_usage["total"] <= limit:
+        return
+    async with _cleanup_lock:
+        if _disk_usage["total"] < 0:
+            await _refresh_disk_usage()
+        if _disk_usage["total"] <= limit:
+            return
+        target = int(limit * 0.9)
+        all_records = [
+            (record.get("start_time", ""), group_id, record)
+            for group_id, records in at_records.items()
+            for record in records
+        ]
+        all_records.sort(key=lambda x: x[0])
+        dropped: Dict[int, set] = {}
+        removed = 0
+        for _, group_id, record in all_records:
+            if _disk_usage["total"] <= target:
+                break
+            record_id = record.get("id")
+            if not record_id:
+                continue
+            _delete_record_files(group_id, record)
+            dropped.setdefault(group_id, set()).add(record_id)
+            removed += 1
+        for group_id, ids in dropped.items():
+            at_records[group_id] = [r for r in at_records[group_id] if r.get("id") not in ids]
+        if removed:
+            logger.info(f"[谁AT我·追踪] 磁盘占用超限，已清理最早的 {removed} 条AT记录。")
+
+
 # --- 初始化与定时任务 ---
 async def init():
     """初始化插件"""
     logger.debug("[谁AT我·追踪] 插件已启动")
     load_at_records()
     await cleanup_old_records()
+    await enforce_disk_limit()
 
 
 @scheduler.scheduled_job("cron", day="*", hour=4, minute=0, misfire_grace_time=60)
@@ -54,6 +141,7 @@ async def scheduled_cleanup():
     """每日定时执行清理任务"""
     logger.debug("[谁AT我·追踪] 开始执行每日AT记录清理任务...")
     await cleanup_old_records()
+    await enforce_disk_limit()
     logger.debug("[谁AT我·追踪] 每日AT记录清理任务执行完毕。")
 
 
@@ -115,6 +203,8 @@ async def cleanup_old_records():
         except OSError as e:
             logger.error(f"[谁AT我·追踪] 清理头像缓存失败: {e}")
 
+    await _refresh_disk_usage()
+
 
 # --- 数据读写 ---
 def load_at_records():
@@ -149,8 +239,10 @@ def save_at_record(record: Dict):
         group_data_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = group_data_dir / f"at_record_{record_id}.json"
+        old_size = _file_size(file_path)
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
+        _adjust_usage(_file_size(file_path) - old_size)
     except Exception as e:
         logger.error(f"[谁AT我·追踪] 保存AT记录失败: {e}")
 
@@ -264,6 +356,7 @@ async def process_images_in_message(msg_record: Dict, group_id: int, associated_
             img_path = RECORD_PATH / str(group_id) / img_name
             if not img_path.exists():
                 await download_image(url, img_path)
+                _adjust_usage(_file_size(img_path))
             item["local_path"] = str(img_path)
             if img_name not in associated_images:
                 associated_images.append(img_name)
@@ -332,10 +425,14 @@ async def process_group_message(bot: Bot, event: Event):
         del active_at_tracking[group_id]
 
     # Part 3: 检查当前消息是否需要开启新的追踪会话
-    has_at = any(item["type"] == "at" for item in content)
-    at_targets = [{"qq": item["qq"], "card": item["card"]} for item in content if item["type"] == "at"]
+    # bot自己被at的不记录
+    at_targets = [
+        {"qq": item["qq"], "card": item["card"]}
+        for item in content
+        if item["type"] == "at" and str(item["qq"]) != str(bot.bot_self_id)
+    ]
 
-    if has_at and str(user_id) != bot.bot_self_id:
+    if at_targets and str(user_id) != bot.bot_self_id:
         is_new_session_needed = True
         current_targets_qq = {str(t.get("qq")) for t in at_targets}
 
@@ -395,6 +492,8 @@ async def process_group_message(bot: Bot, event: Event):
                 active_at_tracking[group_id] = []
             active_at_tracking[group_id].append(new_session)
             logger.info(f"[谁AT我·追踪] Started new AT tracking session for record {record_id}. Tracking next {tracking_count} messages.")
+
+    await enforce_disk_limit()
 
 
 # --- 消息监听：自动追踪所有群消息 ---

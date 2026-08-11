@@ -25,6 +25,12 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         10,
         20,
     ),
+    "MAX_DISK_MB": GsIntConfig(
+        "最大磁盘占用(MB)",
+        "AT记录缓存的磁盘占用上限，超过后从最早的记录开始清理",
+        1024,
+        102400,
+    ),
     "EnableAvatarCache": GsBoolConfig(
         "启用头像缓存",
         "是否缓存用户QQ头像，启用可加快图片生成速度但会占用更多磁盘空间",
