@@ -281,21 +281,32 @@ async def download_image(url: str, save_path: Path) -> bool:
         logger.error(f"[谁AT我·追踪] 下载图片失败 {url}: {e}")
     return False
 
-async def get_user_avatar(qq: str) -> Optional[Image.Image]:
-    """获取用户QQ头像"""
+async def get_user_avatar(qq: str, avatar_url: Optional[str] = None) -> Optional[Image.Image]:
+    """获取用户头像: 优先记录里的平台头像url, 回退 QQ 头像"""
+    urls = []
+    if isinstance(avatar_url, str) and avatar_url.startswith(("http://", "https://")):
+        urls.append(avatar_url)
+    urls.append(f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100")
+    # 平台url与纯qq头像分开缓存，避免互相抢占缓存位
+    cache_name = f"{qq}.jpg" if len(urls) == 1 else f"{qq}_{hashlib.md5(urls[0].encode()).hexdigest()[:8]}.jpg"
     try:
-        if os.path.exists(data_dir / "avatar_cache" / f"{qq}.jpg"):
-            return Image.open(data_dir / "avatar_cache" / f"{qq}.jpg")
-        
-        avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100"
-        avatar_bytes = await asyncio.get_event_loop().run_in_executor(None, download, avatar_url)
-        
-        with open(data_dir / "avatar_cache" / f"{qq}.jpg", 'wb') as f:
-            f.write(avatar_bytes)
-        
-        return Image.open(BytesIO(avatar_bytes))
+        cache_path = data_dir / "avatar_cache" / cache_name
+        if cache_path.exists():
+            return Image.open(cache_path)
+
+        for url in urls:
+            try:
+                avatar_bytes = await asyncio.get_event_loop().run_in_executor(None, download, url)
+            except Exception:
+                continue
+            if not avatar_bytes:
+                continue
+            with open(cache_path, 'wb') as f:
+                f.write(avatar_bytes)
+            return Image.open(BytesIO(avatar_bytes))
+        return None
     except Exception as e:
-        logger.error(f"[谁AT我·追踪] 获取QQ头像失败 {qq}: {e}")
+        logger.error(f"[谁AT我·追踪] 获取用户头像失败 {qq}: {e}")
         return None
 
 async def parse_and_enrich_message(bot: Bot, group_id: int, message: Message) -> List[Dict]:
@@ -377,10 +388,16 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
         card = str(user_id)
     
     content = await parse_and_enrich_message(bot, group_id, event.message)
-    
+
+    # onebot v11 sender 无 avatar 字段，留空占位与 core 版记录格式一致
+    avatar = getattr(event.sender, 'avatar', None) or ''
+    if not (isinstance(avatar, str) and avatar.startswith(('http://', 'https://'))):
+        avatar = ''
+
     msg_record = {
         'user_id': user_id,
         'card': card,
+        'avatar': avatar,
         'time': datetime.now().strftime('%Y%m%d %H:%M:%S'),
         'content': content,
         'message_id': event.message_id
@@ -642,7 +659,7 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
             
             avatar_x, avatar_y = padding, current_y
             
-            avatar_img = await get_user_avatar(user_id)
+            avatar_img = await get_user_avatar(user_id, msg.get('avatar'))
             if avatar_img:
                 avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
                 mask = Image.new('L', (avatar_size, avatar_size), 0)

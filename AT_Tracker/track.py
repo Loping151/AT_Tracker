@@ -284,42 +284,46 @@ async def download_image(url: str, save_path: Path) -> bool:
     return False
 
 
-async def get_user_avatar(qq: str) -> Optional[Image.Image]:
-    """获取用户QQ头像"""
+async def get_user_avatar(qq: str, avatar_url: Optional[str] = None) -> Optional[Image.Image]:
+    """获取用户头像: 优先记录里的平台头像url, 回退 QQ 头像"""
+    urls = []
+    if isinstance(avatar_url, str) and avatar_url.startswith(("http://", "https://")):
+        urls.append(avatar_url)
+    urls.append(f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100")
+    # 平台url与纯qq头像分开缓存，避免互相抢占缓存位
+    cache_name = f"{qq}.jpg" if len(urls) == 1 else f"{qq}_{hashlib.md5(urls[0].encode()).hexdigest()[:8]}.jpg"
     try:
         if not get_config("EnableAvatarCache"):
             # 不启用缓存，直接下载到临时文件
-            avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100"
             temp_file = f"{qq}_temp.jpg"
-            await download(avatar_url, AVATAR_CACHE_PATH, temp_file, tag="[AT_Tracker]")
             avatar_path = AVATAR_CACHE_PATH / temp_file
-            if avatar_path.exists():
+            for url in urls:
+                await download(url, AVATAR_CACHE_PATH, temp_file, tag="[AT_Tracker]")
+                if not avatar_path.exists():
+                    continue
                 try:
                     img = Image.open(avatar_path)
-                    avatar_path.unlink()
+                    img.load()
                     return img
                 except Exception as e:
                     logger.warning(f"[谁AT我·追踪] 打开临时头像文件失败: {e}")
-                    try:
-                        avatar_path.unlink()
-                    except:
-                        pass
                     return None
+                finally:
+                    avatar_path.unlink(missing_ok=True)
             return None
 
         # 启用缓存
-        avatar_path = AVATAR_CACHE_PATH / f"{qq}.jpg"
+        avatar_path = AVATAR_CACHE_PATH / cache_name
         if avatar_path.exists():
             return Image.open(avatar_path)
 
-        avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qq}&s=100"
-        await download(avatar_url, AVATAR_CACHE_PATH, f"{qq}.jpg", tag="[AT_Tracker]")
-
-        if avatar_path.exists():
-            return Image.open(avatar_path)
+        for url in urls:
+            await download(url, AVATAR_CACHE_PATH, cache_name, tag="[AT_Tracker]")
+            if avatar_path.exists():
+                return Image.open(avatar_path)
         return None
     except Exception as e:
-        logger.error(f"[谁AT我·追踪] 获取QQ头像失败 {qq}: {e}")
+        logger.error(f"[谁AT我·追踪] 获取用户头像失败 {qq}: {e}")
         return None
 
 
@@ -396,12 +400,16 @@ async def process_group_message(bot: Bot, event: Event):
 
     # 获取用户昵称
     card = event.sender.get("nickname", str(user_id)) if event.sender else str(user_id)
+    avatar = (event.sender or {}).get("avatar") or ""
+    if not (isinstance(avatar, str) and avatar.startswith(("http://", "https://"))):
+        avatar = ""
 
     content = await parse_and_enrich_message(bot, group_id, event)
 
     msg_record = {
         "user_id": user_id,
         "card": card,
+        "avatar": avatar,
         "time": datetime.now().strftime("%Y%m%d %H:%M:%S"),
         "content": content,
         "message_id": event.msg_id,
@@ -679,7 +687,7 @@ async def generate_chat_image(bot: Bot, record: Dict) -> Optional[Image.Image]:
 
             avatar_x, avatar_y = padding, current_y
 
-            avatar_img = await get_user_avatar(user_id)
+            avatar_img = await get_user_avatar(user_id, msg.get("avatar"))
             if avatar_img:
                 avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
                 mask = Image.new("L", (avatar_size, avatar_size), 0)
